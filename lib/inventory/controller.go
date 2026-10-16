@@ -20,6 +20,7 @@ package inventory
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"log/slog"
 	"maps"
@@ -44,6 +45,7 @@ import (
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/utils/retryutils"
 	"github.com/gravitational/teleport/lib/inventory/internal/delay"
+	"github.com/gravitational/teleport/lib/observability/livemap"
 	"github.com/gravitational/teleport/lib/scopes"
 	scopedapp "github.com/gravitational/teleport/lib/scopes/app"
 	"github.com/gravitational/teleport/lib/services"
@@ -476,6 +478,15 @@ func (c *Controller) handleControlStream(handle *upstreamHandle) {
 	for _, service := range handle.hello.GetServices() {
 		c.serviceCounter.increment(types.SystemRole(service))
 	}
+	livemap.Record(livemap.FlowEvent{
+		Type:     livemap.EventControlStream,
+		From:     handle.Hello().GetServerID(),
+		FromKind: "node",
+		To:       "auth-server",
+		ToKind:   "auth",
+		Summary:  "RegisterControlStream",
+		Details:  fmt.Sprintf("services=%v version=%s", handle.Hello().GetServices(), handle.Hello().GetVersion()),
+	})
 
 	defer func() {
 		if handle.Goodbye().GetDeleteResources() {
@@ -993,6 +1004,15 @@ func (c *Controller) handleSSHServerHB(handle *upstreamHandle, sshServer *types.
 	}
 
 	sshServer.SetExpiry(time.Now().Add(c.serverTTL).UTC())
+	livemap.Record(livemap.FlowEvent{
+		Type:     livemap.EventHeartbeat,
+		From:     handle.Hello().GetServerID(),
+		FromKind: "node",
+		To:       "auth-server",
+		ToKind:   "auth",
+		Summary:  "Heartbeat(SSHServerV2)",
+		Details:  fmt.Sprintf("hostname=%s addr=%s", sshServer.GetHostname(), sshServer.GetAddr()),
+	})
 
 	if handle.sshServer == nil {
 		c.onConnectFunc(constants.KeepAliveNode)

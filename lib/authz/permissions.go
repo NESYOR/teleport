@@ -48,6 +48,7 @@ import (
 	"github.com/gravitational/teleport/api/utils/keys"
 	"github.com/gravitational/teleport/lib/auth/mfatypes"
 	dtauthz "github.com/gravitational/teleport/lib/devicetrust/authz"
+	"github.com/gravitational/teleport/lib/observability/livemap"
 	"github.com/gravitational/teleport/lib/scopes"
 	scopedaccess "github.com/gravitational/teleport/lib/scopes/access"
 	"github.com/gravitational/teleport/lib/services"
@@ -470,6 +471,21 @@ func (a *authorizer) Authorize(ctx context.Context) (authCtx *Context, err error
 	if err := a.checkAdminActionVerification(ctx, authContext); err != nil {
 		return nil, trace.Wrap(err)
 	}
+
+	slog.InfoContext(ctx, "[AUTH-FLOW 2/Authorizer]",
+		"user", authContext.User.GetName(),
+		"identity_type", fmt.Sprintf("%T", authContext.Identity),
+		"roles", authContext.Checker.RoleNames(),
+	)
+	allowed := true
+	livemap.Record(livemap.FlowEvent{
+		Type:    livemap.EventAuthorizer,
+		From:    authContext.User.GetName(),
+		To:      "auth-server",
+		Summary: fmt.Sprintf("Authorize(%T)", authContext.Identity),
+		Details: fmt.Sprintf("roles=%v", authContext.Checker.RoleNames()),
+		Allowed: &allowed,
+	})
 
 	return authContext, nil
 }

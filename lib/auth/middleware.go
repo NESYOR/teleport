@@ -52,6 +52,7 @@ import (
 	"github.com/gravitational/teleport/lib/httplib"
 	"github.com/gravitational/teleport/lib/limiter"
 	"github.com/gravitational/teleport/lib/multiplexer"
+	"github.com/gravitational/teleport/lib/observability/livemap"
 	"github.com/gravitational/teleport/lib/observability/metrics"
 	grpcmetrics "github.com/gravitational/teleport/lib/observability/metrics/grpc"
 	"github.com/gravitational/teleport/lib/utils"
@@ -587,7 +588,31 @@ func (a *Middleware) withAuthenticatedUserUnaryInterceptor(ctx context.Context, 
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	return handler(ctx, req)
+	if user, err := authz.UserFromContext(ctx); err == nil {
+		ident := user.GetIdentity()
+		slog.InfoContext(ctx, "[AUTH-FLOW 1/gRPC-Unary]",
+			"method", info.FullMethod,
+			"caller_type", fmt.Sprintf("%T", user),
+			"username", ident.Username,
+			"groups_roles", ident.Groups,
+			"req_type", fmt.Sprintf("%T", req),
+		)
+		livemap.Record(livemap.FlowEvent{
+			Type:    livemap.EventGRPCUnary,
+			From:    ident.Username,
+			To:      "auth-server",
+			Summary: info.FullMethod,
+			Details: fmt.Sprintf("caller=%T req=%T", user, req),
+		})
+	}
+	resp, err := handler(ctx, req)
+	if err != nil {
+		slog.WarnContext(ctx, "[AUTH-FLOW 1/gRPC-Unary-Error]",
+			"method", info.FullMethod,
+			"error", err,
+		)
+	}
+	return resp, err
 }
 
 // withAuthenticatedUserUnaryInterceptor is a gRPC stream server interceptor
@@ -597,6 +622,22 @@ func (a *Middleware) withAuthenticatedUserStreamInterceptor(srv any, serverStrea
 	ctx, err := a.withAuthenticatedUser(serverStream.Context())
 	if err != nil {
 		return trace.Wrap(err)
+	}
+	if user, err := authz.UserFromContext(ctx); err == nil {
+		ident := user.GetIdentity()
+		slog.InfoContext(ctx, "[AUTH-FLOW 1/gRPC-Stream]",
+			"method", info.FullMethod,
+			"caller_type", fmt.Sprintf("%T", user),
+			"username", ident.Username,
+			"groups_roles", ident.Groups,
+		)
+		livemap.Record(livemap.FlowEvent{
+			Type:    livemap.EventGRPCStream,
+			From:    ident.Username,
+			To:      "auth-server",
+			Summary: info.FullMethod,
+			Details: fmt.Sprintf("caller=%T", user),
+		})
 	}
 	return handler(srv, &authenticatedStream{ctx: ctx, ServerStream: serverStream})
 }

@@ -71,6 +71,7 @@ import (
 	"github.com/gravitational/teleport/lib/events"
 	iterstream "github.com/gravitational/teleport/lib/itertools/stream"
 	"github.com/gravitational/teleport/lib/modules"
+	"github.com/gravitational/teleport/lib/observability/livemap"
 	"github.com/gravitational/teleport/lib/scopes"
 	scopedaccess "github.com/gravitational/teleport/lib/scopes/access"
 	"github.com/gravitational/teleport/lib/scopes/joining"
@@ -172,7 +173,24 @@ func (a *ServerWithRoles) actionWithContext(ctx *services.Context, resource stri
 		}
 	}
 
-	return trace.NewAggregate(errs...)
+	err := trace.NewAggregate(errs...)
+	allowed := err == nil
+	slog.Info("[AUTH-FLOW 3/RBAC-RuleCheck]",
+		"user", a.context.User.GetName(),
+		"roles", a.context.Checker.RoleNames(),
+		"resource", resource,
+		"verb", verb,
+		"allowed", allowed,
+	)
+	livemap.Record(livemap.FlowEvent{
+		Type:    livemap.EventRBACCheck,
+		From:    a.context.User.GetName(),
+		To:      "auth-server",
+		Summary: fmt.Sprintf("%s:%s", resource, verb),
+		Details: fmt.Sprintf("roles=%v allowed=%v", a.context.Checker.RoleNames(), allowed),
+		Allowed: &allowed,
+	})
+	return err
 }
 
 // actionNamspace will determine if a user has access to the given verbs against the given resource kind in the given
@@ -190,7 +208,25 @@ func (a *ServerWithRoles) actionNamespace(namespace, resource string, verb strin
 		}
 	}
 
-	return trace.NewAggregate(errs...)
+	err := trace.NewAggregate(errs...)
+	allowed := err == nil
+	slog.Info("[AUTH-FLOW 3/RBAC-RuleCheck]",
+		"user", a.context.User.GetName(),
+		"roles", a.context.Checker.RoleNames(),
+		"namespace", namespace,
+		"resource", resource,
+		"verb", verb,
+		"allowed", allowed,
+	)
+	livemap.Record(livemap.FlowEvent{
+		Type:    livemap.EventRBACCheck,
+		From:    a.context.User.GetName(),
+		To:      "auth-server",
+		Summary: fmt.Sprintf("%s/%s:%s", namespace, resource, verb),
+		Details: fmt.Sprintf("roles=%v allowed=%v", a.context.Checker.RoleNames(), allowed),
+		Allowed: &allowed,
+	})
+	return err
 }
 
 func (a *ServerWithRoles) authorizeActionWithOrigin(resourceKind string, origin string) error {

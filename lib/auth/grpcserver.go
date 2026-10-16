@@ -158,6 +158,7 @@ import (
 	"github.com/gravitational/teleport/lib/join/legacyjoin"
 	"github.com/gravitational/teleport/lib/limiter"
 	"github.com/gravitational/teleport/lib/modules"
+	"github.com/gravitational/teleport/lib/observability/livemap"
 	"github.com/gravitational/teleport/lib/observability/metrics"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/services/local"
@@ -677,6 +678,19 @@ func WatchEvents(
 		size := float64(proto.Size(out))
 		watcherEventsEmitted.WithLabelValues(resourceLabel(event)).Observe(size)
 		watcherEventSizes.Observe(size)
+
+		resName := ""
+		if event.Resource != nil {
+			resName = event.Resource.GetName()
+		}
+		livemap.Record(livemap.FlowEvent{
+			Type:     livemap.EventWatchEvent,
+			From:     "auth-server",
+			FromKind: "auth",
+			To:       componentName,
+			Summary:  fmt.Sprintf("%s(%s)", event.Type, resourceLabel(event)),
+			Details:  fmt.Sprintf("resource=%s bytes=%d", resName, int(size)),
+		})
 
 		if err := stream.Send(out); err != nil {
 			return trace.Wrap(err)
