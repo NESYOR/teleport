@@ -1,42 +1,43 @@
-# 07 - Live Cluster Topology & Packet Flow Map (Auth Event Consumer)
+# 07 - Live Cluster Topology & Packet Flow Map (Auth & Proxy Event Consumer)
 
-To build a live, dynamic map of **what is connected to what**, **which component is sending heartbeats**, **which reverse tunnels are active**, and **which users have live sessions**, we created an **Auth Event Consumer** ([`lib/observability/livemap/consumer.go`](file:///home/strawhat/project/teleport/lib/observability/livemap/consumer.go)) and a standalone CLI utility ([`lib/observability/livemap/cmd/teleport-livemap/main.go`](file:///home/strawhat/project/teleport/lib/observability/livemap/cmd/teleport-livemap/main.go)).
+To build a live, dynamic map of **what is connected to what**, **which component is sending heartbeats**, **which reverse tunnels are active**, **which users have live sessions**, and **what security/RBAC/CA/config changes are occurring**, we created an **Auth & Proxy Event Consumer** ([`lib/observability/livemap/consumer.go`](file:///home/strawhat/project/teleport/lib/observability/livemap/consumer.go)) and a standalone CLI utility ([`lib/observability/livemap/cmd/teleport-livemap/main.go`](file:///home/strawhat/project/teleport/lib/observability/livemap/cmd/teleport-livemap/main.go)).
 
-Instead of relying on static or hardcoded nodes, the topology starts completely empty and is **dynamically constructed in real time from Teleport Auth events**.
+Instead of relying on static or hardcoded nodes, the topology starts completely empty and is **dynamically constructed in real time from Teleport Auth & Proxy watch events**.
 
 ---
 
-## 1. How the Auth Event Consumer Builds the Topology
+## 1. How the Auth & Proxy Event Consumer Builds the Topology
 
-[`livemap.Consumer.WatchCluster`](file:///home/strawhat/project/teleport/lib/observability/livemap/consumer.go#L49-L71) subscribes to the Auth Service's real-time `NewWatcher` stream (`types.Watch`) across all core cluster resource kinds, plus `apievents.AuditEvent`s:
+[`livemap.Consumer.WatchCluster`](file:///home/strawhat/project/teleport/lib/observability/livemap/consumer.go#L209-L230) subscribes to the Auth Service's real-time `NewWatcher` stream (`types.Watch`) across **all 82 Auth and Proxy resource watch kinds** ([`DefaultWatchKinds`](file:///home/strawhat/project/teleport/lib/observability/livemap/consumer.go#L76-L184) and [`ProxyWatchKinds`](file:///home/strawhat/project/teleport/lib/observability/livemap/consumer.go#L23-L70), matching [`cache.ForAuth`](file:///home/strawhat/project/teleport/lib/cache/cache.go#L139-L245) and [`cache.ForProxy`](file:///home/strawhat/project/teleport/lib/cache/cache.go#L248-L302)), plus active `SessionTracker`s and `apievents.AuditEvent`s:
 
 ```mermaid
 flowchart LR
-    subgraph AuthStream["Teleport Auth Server Event Streams"]
-        W["NewWatcher (OpPut / OpDelete)<br/>- KindAuthServer<br/>- KindProxy<br/>- KindNode<br/>- KindDatabaseServer<br/>- KindKubeServer<br/>- KindAppServer<br/>- KindTunnelConnection<br/>- KindSessionTracker"]
+    subgraph AuthStream["Teleport Auth & Proxy Event Streams"]
+        W["NewWatcher (82 Auth & Proxy Resource Kinds)<br/>1. Presence & Heartbeats (Instance, Auth, Proxy, Relay, Node, DB, Kube, App, Desktop, Git, Bot)<br/>2. Reverse Tunnels & Federation (TunnelConnection, ReverseTunnel, RemoteCluster)<br/>3. Sessions & Handshakes (WebSession, AppSession, SnowflakeSession, WebToken, HeadlessAuth, MFA)<br/>4. Zero-Trust Access & Locks (AccessRequest, Lock, AccessList, CrownJewel)<br/>5. CAs, Trust & Identity (CertAuthority, SPIFFE, SAML IdP, WorkloadIdentity)<br/>6. RBAC, Users, Roles, Tokens & Devices<br/>7. Cluster Config, Discovery, AutoUpdate Rollouts & Plugins"]
+        S["SessionTrackers (GetActiveSessionTrackers)<br/>Live SSH / Kube / DB / App / Desktop participants"]
         A["Audit Events (apievents.AuditEvent)<br/>- user.login / cert.create<br/>- session.start / session.end<br/>- db.session.query / kube.request"]
     end
 
     W --> Consumer["livemap.Consumer<br/>(lib/observability/livemap/consumer.go)"]
+    S --> Consumer
     A --> Consumer
     Consumer --> Hub["livemap.Hub (Dynamic Graph State)<br/>(lib/observability/livemap/hub.go)"]
     Hub -->|"/snapshot & /events (SSE)"| Browser["Live HTML5 Canvas Topology Map<br/>(lib/observability/livemap/ui.go)"]
 ```
 
-### Mapping Auth Events to Graph Nodes & Directed Edges
+### Complete Watch Categories & Graph Mapping
 
-| Auth Event / Resource | Graph Node(s) Created/Updated | Directed Edge Created/Pulsed | What Payload Data Is Extracted |
+| Category | Watched Resource Kinds (`types.WatchKind`) | Graph Edge & Event Type | What Payload Data Is Extracted |
 | :--- | :--- | :--- | :--- |
-| **`OpPut(KindAuthServer)`** | `auth:<name>` | `auth:<name>` (Self/Presence) | `Hostname`, `Addr`, `TeleportVersion`, `Expiry` |
-| **`OpPut(KindProxy)`** | `proxy:<name>` | `proxy:<name> ──► auth:<id>` (`HEARTBEAT`) | `Hostname`, `PublicAddr`, `PeerAddr`, `Expiry` |
-| **`OpPut(KindNode)`** | `node:<name>` | `node:<name> ──► auth:<id>` (`HEARTBEAT`) | `Hostname`, `Addr`, `UseTunnel`, live TTL (`time.Until(Expiry)`) |
-| **`OpPut(KindDatabaseServer)`** | `db:<db_name>` | `db:<db_name> ──► auth:<id>` (`HEARTBEAT`) | `HostID`, `Protocol` (`postgres`, `mysql`, etc.), `URI` |
-| **`OpPut(KindKubeServer)`** | `kube:<cluster>` | `kube:<cluster> ──► auth:<id>` (`HEARTBEAT`) | `HostID`, `Cluster.Name` |
-| **`OpPut(KindAppServer)`** | `app:<app_name>` | `app:<app_name> ──► auth:<id>` (`HEARTBEAT`) | `HostID`, `App.Name`, `App.URI` |
-| **`OpPut(KindTunnelConnection)`** | `<type>:<target>` & `proxy:<proxy_name>` | `<type>:<target> ──► proxy:<proxy_name>` (`TUNNEL_HB`) | Exact Proxy UUID holding the reverse tunnel, `ClusterName`, `TunnelType`, `LastHeartbeat` |
-| **`OpPut(KindSessionTracker)`** | `user:<participant>` & `<kind>:<target>` | `user:<participant> ──► <kind>:<target>` (`LIVE_SESSION`) | `SessionID`, `SessionKind` (`ssh`, `k8s`, `db`, `app`), `Login`, `State`, `Participants` |
-| **`OpDelete(KindNode / ...)`** | *Removes expired node & incident edges* | Emits `RESOURCE_EXPIRED` | Node/Session name that expired or disconnected |
-| **`AuditEvent`** | `user:<user>` & `<kind>:<server_id>` | `user:<user> ──► <kind>:<target>` (`AUDIT_EVENT`) | Event `Type` (`session.start`, `user.login`, etc.), diagnostic `Code`, `Time` |
+| **1. Agent & Proxy Presence (`HEARTBEAT` / `INSTANCE_HB`)** | `KindInstance`, `KindAuthServer`, `KindProxy`, `KindRelayServer`, `KindNode`, `KindDatabaseServer`, `KindDatabaseService`, `KindDatabase`, `KindDatabaseObject`, `KindKubeServer`, `KindKubernetesCluster`, `KindAppServer`, `KindApp`, `KindWindowsDesktopService`, `KindWindowsDesktop`, `KindDynamicWindowsDesktop`, `KindLinuxDesktop`, `KindGitServer`, `KindBotInstance` | `<kind>:<name> ──► auth:<id>` | `Hostname`, `Addr`/`PublicAddr`/`URI`, `TeleportVersion`, enabled `Services`, `UseTunnel`, live TTL (`time.Until(Expiry)`) |
+| **2. Reverse Tunnels & Multi-Cluster (`TUNNEL_HB`)** | `KindTunnelConnection`, `KindReverseTunnel`, `KindRemoteCluster` | `<type>:<name> ──► proxy:<proxy_name>` or `cluster:<leaf> ──► auth:<id>` | Exact Proxy UUID holding the reverse tunnel, `ClusterName`, `TunnelType`, `ConnectionStatus`, `LastHeartbeat` |
+| **3. Live Sessions & Handshakes (`LIVE_SESSION`)** | `KindSessionTracker` (via `SyncActiveSessions`), `KindWebSession` (`web_session`, `app_session`, `snowflake_session`), `KindWebToken`, `KindHeadlessAuthentication`, `KindValidatedMFAChallenge`, `KindKubeWaitingContainer`, `KindBeam` | `user:<participant> ──► <kind>:<target>` | `SessionID`, `SessionKind` (`ssh`, `k8s`, `db`, `app`), `Login`, `State`, `Participants`, bearer token expiry |
+| **4. Zero-Trust Access & Locks (`ACCESS_REQUEST` / `SESSION_LOCK`)** | `KindAccessRequest`, `KindLock`, `KindAccessList`, `KindAccessListMember`, `KindAccessListReview`, `KindAccessMonitoringRule`, `KindCrownJewel`, `KindAccessGraphSettings` | `user:<user> ──► auth:<id>` (AccessRequest) or `auth:<id> ──► <target>` (Lock) | Requested `Roles`, `State` (`PENDING`/`APPROVED`/`DENIED`), `RequestReason`, `LockTarget` (`ServerID`/`User`/`Role`), lock `Message` |
+| **5. CAs, Trust & Identity (`CA_ROTATION`)** | `KindCertAuthority`, `KindCertAuthorityOverride`, `KindPendingCSRRequest`, `KindSPIFFEFederation`, `KindSAMLIdPServiceProvider`, `KindWorkloadIdentity`, `KindRecordingEncryption` | `auth:<id> ──► ca:<type>:<cluster>` | CA `Type` (`host`, `user`, `db_client`, `openssh`, `jwt`), `ClusterName`, `Rotation.Phase` |
+| **6. RBAC, Users, Tokens & Devices (`RBAC_CHANGE`)** | `KindUser`, `KindUserLoginState`, `KindRole`, `KindScopedRole`, `KindScopedRoleAssignment`, `KindUserGroup`, `KindToken`, `KindStaticTokens`, `KindStaticScopedTokens`, `KindStaticHostUser`, `KindDevice`, `KindOktaImportRule`, `KindOktaAssignment`, `KindIdentityCenter*` | `auth:<id> ──► user:<name>` or `auth:<id> ──► auth:<id>` | User `Roles`, join token `JoinMethod` (`iam`, `tpm`, `token`), device/group changes |
+| **7. Cluster Config, Discovery & Rollouts (`CONFIG_CHANGE`)** | `KindClusterName`, `KindClusterAuthPreference`, `KindClusterNetworkingConfig`, `KindSessionRecordingConfig`, `KindClusterAuditConfig`, `KindUIConfig`, `KindNetworkRestrictions`, `KindDiscoveryConfig`, `KindIntegration`, `KindPlugin`, `KindAutoUpdateConfig`, `KindAutoUpdateVersion`, `KindAutoUpdateAgentRollout`, `KindAutoUpdateAgentReport`, `KindHealthCheckConfig`, `KindSecurityReport`, `KindNotification`, `KindUserTask`, `KindInference*` | `auth:<id> ──► auth:<id>` | Real-time config, rollout, discovery, or plugin state change |
+| **8. Expiry & Disconnections (`RESOURCE_EXPIRED`)** | `OpDelete` on any watched kind | Removes expired node & incident edges | Resource `Kind` and `Name` that expired or disconnected |
+| **9. Audit Log (`AUDIT_EVENT`)** | `apievents.AuditEvent` | `user:<user> ──► <kind>:<target>` | Event `Type` (`session.start`, `user.login`, etc.), diagnostic `Code`, `Time` |
 
 ---
 
@@ -54,13 +55,13 @@ go run ./lib/observability/livemap/cmd/teleport-livemap \
   --identity=identity.pem \
   --listen=127.0.0.1:8899
 ```
-Then open **`http://127.0.0.1:8899`** to watch your cluster's live heartbeats, reverse tunnels, and active user sessions.
+Then open **`http://127.0.0.1:8899`** to watch your cluster's live heartbeats, reverse tunnels, active user sessions, access requests, and locks.
 
 ---
 
 ## 3. Running with an In-Memory Test Cluster
 
-You can also run the self-contained test in [`lib/auth/livemap_demo_test.go`](file:///home/strawhat/project/teleport/lib/auth/livemap_demo_test.go), which starts a real in-memory Auth Server, attaches `livemap.Consumer.WatchCluster` over gRPC, and lets you trigger real Auth resource mutations (`InventoryHeartbeat`, `UpsertTunnelConnection`, `CreateSessionTracker`, `DeleteNode`, and `AuditEvent`):
+You can also run the self-contained test in [`lib/auth/livemap_demo_test.go`](file:///home/strawhat/project/teleport/lib/auth/livemap_demo_test.go), which starts a real in-memory Auth Server, attaches `livemap.Consumer.WatchCluster` over gRPC with all 82 Auth & Proxy watch kinds, and lets you trigger real Auth resource mutations (`InventoryHeartbeat`, `UpsertTunnelConnection`, `CreateSessionTracker`, `UpsertAccessRequest`, `UpsertLock`, `DeleteNode`, and `AuditEvent`):
 
 ```bash
 # Run automated test and print discovered topology summary

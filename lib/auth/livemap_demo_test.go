@@ -167,6 +167,37 @@ func TestLiveMapVisualizer(t *testing.T) {
 			}
 			return "Created SessionTracker -> SyncActiveSessions linked user:alice -> node:ssh-node-01", nil
 
+		case "access_request":
+			user, err := types.NewUser("alice")
+			if err == nil {
+				user.SetRoles([]string{"access"})
+				_, _ = srv.Auth().UpsertUser(ctx, user)
+			}
+			req, err := types.NewAccessRequest(uuid.NewString(), "alice", "access")
+			if err != nil {
+				return "", err
+			}
+			req.SetRequestReason("Investigating production incident #402")
+			if err := srv.Auth().UpsertAccessRequest(ctx, req); err != nil {
+				return "", err
+			}
+			return "Upserted AccessRequest -> Auth emitted OpPut(KindAccessRequest) for user:alice -> auth", nil
+
+		case "lock":
+			lock, err := types.NewLock("incident-lock-"+uuid.NewString()[:6], types.LockSpecV2{
+				Target: types.LockTarget{
+					ServerID: nodeID,
+				},
+				Message: "Compromised host quarantined by SecOps",
+			})
+			if err != nil {
+				return "", err
+			}
+			if err := srv.Auth().UpsertLock(ctx, lock); err != nil {
+				return "", err
+			}
+			return "Upserted Lock -> Auth emitted OpPut(KindLock) locking node:ssh-node-01", nil
+
 		case "audit":
 			consumer.ProcessAuditEvent(&apievents.SessionStart{
 				Metadata: apievents.Metadata{
@@ -206,13 +237,19 @@ func TestLiveMapVisualizer(t *testing.T) {
 	_, err = triggerAction("session")
 	require.NoError(t, err)
 
+	_, err = triggerAction("access_request")
+	require.NoError(t, err)
+
+	_, err = triggerAction("lock")
+	require.NoError(t, err)
+
 	_, err = triggerAction("audit")
 	require.NoError(t, err)
 
 	// Wait for NewWatcher stream to deliver all OpPut events to Consumer
 	require.Eventually(t, func() bool {
 		snap := hub.GetSnapshot()
-		return len(snap.Nodes) >= 5 && len(snap.Edges) >= 5
+		return len(snap.Nodes) >= 5 && len(snap.Edges) >= 8
 	}, 5*time.Second, 50*time.Millisecond)
 
 	handler := livemap.NewHTTPHandler(hub, triggerAction)

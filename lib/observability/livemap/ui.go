@@ -120,9 +120,13 @@ const dashboardHTML = `<!DOCTYPE html>
     font-size: 10px;
     font-weight: 600;
   }
-  .b-HEARTBEAT, .b-CONTROL_STREAM { background: rgba(34, 197, 94, 0.2); color: #4ade80; }
+  .b-HEARTBEAT, .b-CONTROL_STREAM, .b-INSTANCE_HB { background: rgba(34, 197, 94, 0.2); color: #4ade80; }
   .b-TUNNEL_HB { background: rgba(56, 189, 248, 0.25); color: #38bdf8; }
   .b-LIVE_SESSION { background: rgba(245, 158, 11, 0.25); color: #fbbf24; }
+  .b-ACCESS_REQUEST { background: rgba(16, 185, 129, 0.25); color: #34d399; }
+  .b-SESSION_LOCK { background: rgba(239, 68, 68, 0.3); color: #f87171; }
+  .b-CA_ROTATION { background: rgba(168, 85, 247, 0.25); color: #c084fc; }
+  .b-RBAC_CHANGE, .b-CONFIG_CHANGE { background: rgba(99, 102, 241, 0.25); color: #818cf8; }
   .b-AUDIT_EVENT { background: rgba(236, 72, 153, 0.25); color: #f472b6; }
   .b-WATCH_EVENT { background: rgba(56, 189, 248, 0.2); color: #38bdf8; }
   .b-GRPC_UNARY, .b-GRPC_STREAM { background: rgba(168, 85, 247, 0.2); color: #c084fc; }
@@ -135,13 +139,15 @@ const dashboardHTML = `<!DOCTYPE html>
 <body>
 <header>
   <div>
-    <h1>Teleport Auth Event Consumer ──► Dynamic Cluster Topology Map</h1>
-    <span id="status">Listening to Auth Watcher & Audit Event Stream...</span>
+    <h1>Teleport Auth & Proxy Event Consumer ──► Dynamic Cluster Topology Map</h1>
+    <span id="status">Listening to All 83 Auth & Proxy Watcher Kinds + Audit Stream...</span>
   </div>
   <div class="controls" id="trigger-controls">
     <button onclick="trigger('heartbeat')">Pulse Agent Heartbeat</button>
     <button onclick="trigger('tunnel')">Upsert Reverse Tunnel</button>
-    <button onclick="trigger('session')">Start Live User Session</button>
+    <button onclick="trigger('session')">Start Live Session</button>
+    <button onclick="trigger('access_request')">Create AccessRequest</button>
+    <button class="danger" onclick="trigger('lock')">Create Session Lock</button>
     <button onclick="trigger('audit')">Emit Audit Event</button>
     <button class="danger" onclick="trigger('expire_node')">Expire Node (OpDelete)</button>
   </div>
@@ -150,16 +156,18 @@ const dashboardHTML = `<!DOCTYPE html>
   <div class="canvas-wrap">
     <canvas id="map"></canvas>
     <div class="legend">
-      <span><i class="dot" style="background:#4ade80"></i>HEARTBEAT (OpPut Presence)</span>
-      <span><i class="dot" style="background:#38bdf8"></i>TUNNEL_HB (Reverse Tunnel -> Proxy)</span>
-      <span><i class="dot" style="background:#fbbf24"></i>LIVE_SESSION (User -> Target)</span>
-      <span><i class="dot" style="background:#f472b6"></i>AUDIT_EVENT (Auth Audit Log)</span>
-      <span><i class="dot" style="background:#c084fc"></i>gRPC / RBAC</span>
+      <span><i class="dot" style="background:#4ade80"></i>HEARTBEAT / INSTANCE_HB</span>
+      <span><i class="dot" style="background:#38bdf8"></i>TUNNEL_HB (Proxy/Cluster)</span>
+      <span><i class="dot" style="background:#fbbf24"></i>LIVE_SESSION / WEB_SESSION</span>
+      <span><i class="dot" style="background:#34d399"></i>ACCESS_REQUEST</span>
+      <span><i class="dot" style="background:#ef4444"></i>SESSION_LOCK / EXPIRED</span>
+      <span><i class="dot" style="background:#c084fc"></i>CA_ROTATION / RBAC / CONFIG</span>
+      <span><i class="dot" style="background:#f472b6"></i>AUDIT_EVENT</span>
     </div>
   </div>
   <div class="sidebar">
     <div class="section-title">
-      <span>DISCOVERED TOPOLOGY EDGES (FROM AUTH EVENTS)</span>
+      <span>DISCOVERED TOPOLOGY EDGES (FROM AUTH & PROXY WATCHERS)</span>
       <span id="edge-count">0 edges</span>
     </div>
     <div class="edges-box">
@@ -171,7 +179,7 @@ const dashboardHTML = `<!DOCTYPE html>
       </table>
     </div>
     <div class="section-title">
-      <span>REAL-TIME AUTH WATCHER & AUDIT STREAM</span>
+      <span>REAL-TIME AUTH & PROXY WATCHER STREAM</span>
       <span id="event-count">0 events</span>
     </div>
     <div class="events-box">
@@ -201,16 +209,21 @@ window.addEventListener('resize', resize);
 resize();
 
 function colorForType(ev) {
-  if (ev.allowed === false || ev.type === 'RESOURCE_EXPIRED') return '#ef4444';
+  if (ev.type === 'SESSION_LOCK' || ev.allowed === false || ev.type === 'RESOURCE_EXPIRED') return '#ef4444';
   switch (ev.type) {
     case 'HEARTBEAT':
+    case 'INSTANCE_HB':
     case 'CONTROL_STREAM': return '#4ade80';
     case 'TUNNEL_HB':
     case 'WATCH_EVENT': return '#38bdf8';
     case 'LIVE_SESSION': return '#fbbf24';
-    case 'AUDIT_EVENT': return '#f472b6';
+    case 'ACCESS_REQUEST': return '#34d399';
+    case 'CA_ROTATION':
+    case 'RBAC_CHANGE':
+    case 'CONFIG_CHANGE':
     case 'GRPC_UNARY':
     case 'GRPC_STREAM': return '#c084fc';
+    case 'AUDIT_EVENT': return '#f472b6';
     default: return '#60a5fa';
   }
 }
